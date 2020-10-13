@@ -1,0 +1,275 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import re
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from random import randint, choice
+from emoji import demojize
+from datetime import datetime
+from time import sleep, time
+import traceback
+from InstagramAPI import InstagramAPI
+import config
+
+
+def loc_based(api, target):
+    api.searchLocation(target)
+    for loca in api.LastJson['items']:
+        location = str(loca['location'].get('pk', ''))
+        next_max_id = True
+        counter = 0
+        while next_max_id:
+            if next_max_id is True:
+                next_max_id = ''
+            _ = api.getLocationFeed(location, maxid=next_max_id)
+            js = api.LastJson
+            sleep(1)
+            for i in js['items']:
+                cur_user = i['user']['pk']
+                analyze(api, cur_user, target)
+                counter += 1
+                if counter > parse_limit:
+                    return
+            sleep(1)
+            api.LastJson = js
+            try:
+                next_max_id = api.LastJson.get('next_max_id', '')
+            except:
+                return
+
+
+def hash_based(api, hashtags):
+    next_max_id = True
+    for hashtag in hashtags:
+        local_counter = 0
+        next_max_id = True
+        while next_max_id and local_counter <= parse_limit:
+            if next_max_id is True:
+                next_max_id = ''
+            _ = api.getHashtagFeed(hashtag, maxid=next_max_id)
+            js = api.LastJson
+            sleep(1)
+            for i in js['items']:
+                cur_user = i['user']['pk']
+                analyze(api, cur_user, hashtag)
+                local_counter += 1
+                print(f"{local_counter} was analyzed")
+                if local_counter >= parse_limit:
+                    break
+            sleep(1)
+            api.LastJson = js
+            try:
+                next_max_id = api.LastJson.get('next_max_id', '')
+            except:
+                return
+
+
+def user_based(api, target):
+    api.searchUsername(target)
+    target_id = str(api.LastJson.get('user', "").get("pk", ""))
+    sleep(0.5)
+    getTotalFollowers(api, target_id)
+
+
+def getTotalFollowers(api, user_id):
+    usrs = []
+    next_max_id = True
+    while next_max_id:
+        if next_max_id is True:
+            next_max_id = ''
+        _ = api.getUserFollowers(user_id, maxid=next_max_id)
+        j = api.LastJson
+        for i in j['users']:
+            cur_user = i['pk']
+            usrs.append(cur_user)
+            analyze(api, cur_user, target)
+            if len(usrs) > parse_limit:
+                print(f"Parsed: {str(len(usrs))}")
+                sleep(2.5)
+                print("All users parsed")
+                return
+        api.LastJson = j
+        next_max_id = api.LastJson.get('next_max_id', '')
+        print(f"Parsed: {str(len(usrs))}")
+        sleep(randint(2, 3))
+    print("All users parsed")
+
+
+def analyze(api, cur_user, target):
+    com_counter = []
+    locations = []
+    tags = []
+    pattern = "#(\w+)"
+    try:
+        if str(cur_user) not in users and int(cur_user) not in blacklist and str(cur_user) not in blacklist and int(
+                cur_user) not in users:
+            api.getUsernameInfo(cur_user)
+            while api.LastResponse.status_code == "429":
+                sleep(3)
+                api.getUsernameInfo(cur_user)
+            jz = api.LastJson
+            try:
+                business = jz['user']['is_business']
+            except:
+                business = False
+            try:
+                if business:
+                    user = jz['user']['username']
+                    email = jz['user']['public_email']
+                    category = jz['user']['category']
+                    name = jz['user']['full_name']
+                    follower_count = int(jz['user']['follower_count'])
+                    following_count = jz['user']['following_count']
+                    try:
+                        location = jz['user']['city_name']
+                    except:
+                        location = ""
+                    contact_phone_number = jz['user']['contact_phone_number']
+                    site = jz['user']['external_url']
+                    posts_number = int(jz['user']['media_count'])
+                    if follower_count > min_followers and follower_count < max_followers:
+                        sleep(0.5)
+                        api.getUserFeed(cur_user)
+                        jt = api.LastJson
+                        for post in jt['items']:
+                            try:
+                                com_counter.append(str(post['comment_count']))
+                            except:
+                                com_counter.append("0")
+                            try:
+                                caption = str(demojize(post['caption']['text']))
+                                tags.extend(re.findall(pattern, caption))
+                            except:
+                                pass
+                            try:
+                                locations.append(post['location']['name'])
+                            except:
+                                pass
+                        tags = list(set(tags))
+                        if str(location) == "":
+                            try:
+                                location = choice(locations)
+                            except:
+                                location = ""
+                        if email:  # and any(ext in criteria for ext in tags):
+                            scope = ['https://spreadsheets.google.com/feeds',
+                                     'https://www.googleapis.com/auth/drive']
+                            creds = ServiceAccountCredentials.from_json_keyfile_name('client_secret.json',
+                                                                                     scope)
+                            client = gspread.authorize(creds)
+                            sheet = client.open(google_doc).sheet1
+                            row = f"{cur_user};{user};{email};{name};{category};{contact_phone_number};{site};{follower_count};{following_count};{posts_number};{target};{location};{com_counter[0]};{com_counter[1]};{com_counter[2]};{com_counter[3]};{com_counter[4]};{com_counter[5]};{com_counter[6]};{com_counter[7]};{com_counter[8]};{com_counter[9]}\n".split(
+                                ";")
+                            sheet.insert_row(row, 2)
+                            users.append(cur_user)
+                            with open("result.csv", "a", encoding='utf-8') as r:
+                                r.write(
+                                    f"{cur_user};{user};{email};{name};{category};{contact_phone_number};{site};{follower_count};{following_count};{posts_number};{target};{location};{com_counter[0]};{com_counter[1]};{com_counter[2]};{com_counter[3]};{com_counter[4]};{com_counter[5]};{com_counter[6]};{com_counter[7]};{com_counter[8]};{com_counter[9]}\n")
+                            total_counter = len(sheet.get_all_values()) - 1
+                            print(f"Business account saved, {total_counter} in total")
+                        else:
+                            blacklist.append(cur_user)
+                            try:
+                                with open('log.txt', 'a', encoding='utf-8') as b:
+                                    b.write(f'{cur_user}\n')
+                            except:
+                                pass
+                    else:
+                        blacklist.append(cur_user)
+                        try:
+                            with open('log.txt', 'a', encoding='utf-8') as b:
+                                b.write(f'{cur_user}\n')
+                        except:
+                            pass
+                        with open("rubbish.csv", "a", encoding='utf-8') as r:
+                            r.write(
+                                f"{cur_user};{user};{email};{name};{category};{contact_phone_number};{site};{follower_count};{following_count};{posts_number};{target};{location}\n")
+
+                else:
+                    blacklist.append(cur_user)
+                    try:
+                        with open('log.txt', 'a', encoding='utf-8') as b:
+                            b.write(f'{cur_user}\n')
+                    except:
+                        pass
+            except:
+                print(traceback.format_exc())
+            sleep(2.75)
+    except:
+        print(traceback.format_exc())
+
+
+if __name__ == '__main__':
+    users = []
+    blacklist = []
+    print("Start")
+    username = config.LOGIN
+    password = config.PASSWORD
+    type = config.TYPE
+    try:
+        max_followers = int(config.MAX_FOLLOWERS)
+    except:
+        max_followers = 25000
+
+    try:
+        min_followers = int(config.MIN_FOLLOWERS)
+    except:
+        min_followers = 250
+
+    try:
+        parse_limit = int(config.LIMIT)
+    except:
+        parse_limit = 1000
+
+    try:
+        google_doc = str(config.GOOGLE_DOC)
+    except:
+        google_doc = 'TEST'
+
+    with open('log.txt', 'a', encoding='utf-8') as b:
+        pass
+
+    with open("log.txt", "r", encoding="utf-8") as f:
+        for line in f:
+            blacklist.append(int(line.strip()))
+
+    try:
+        with open("result.csv", "x", encoding="utf-8") as t:
+            t.write(
+                "id;username;email;name;category;phone;URL;followers;followings;posts_number;searching;location\n")
+            row = "id;username;email;name;category;phone;URL;followers;followings;posts_number;searching;location".split(
+                ";")
+            scope = ['https://spreadsheets.google.com/feeds',
+                     'https://www.googleapis.com/auth/drive']
+            creds = ServiceAccountCredentials.from_json_keyfile_name('client_secret.json',
+                                                                     scope)
+            client = gspread.authorize(creds)
+            sheet = client.open(google_doc).sheet1
+            sheet.insert_row(row, 1)
+    except:
+        pass
+
+    with open("result.csv", "r", encoding="utf-8") as f:
+        for line in f:
+            users.append(line.strip().split(';')[0])
+        try:
+            users.remove('id')
+        except:
+            pass
+    print("Blacklist refreshed")
+
+    api = InstagramAPI(username, password)
+    api.login()
+
+    if str(type) in ['hashtag', 'hash', 'hashtags']:
+        target = str(config.TARGET).split(',')
+        hash_based(api, target)
+    elif str(type) in ['loc', 'location', 'locations']:
+        target = str(config.TARGET)
+        loc_based(api, target)
+    else:
+        target = str(config.TARGET)
+        user_based(api, target)
+    print("Finished")
+    api.logout()
